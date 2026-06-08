@@ -1,21 +1,21 @@
-import { HttpApi, HttpMethod } from "aws-cdk-lib/aws-apigatewayv2";
-import { HttpLambdaIntegration } from "aws-cdk-lib/aws-apigatewayv2-integrations";
-import { Runtime } from "aws-cdk-lib/aws-lambda";
-import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs";
-import * as cdk from "aws-cdk-lib/core";
-import { Construct } from "constructs";
-import * as path from "node:path";
+import * as path from "node:path"
+import { HttpApi, HttpMethod } from "aws-cdk-lib/aws-apigatewayv2"
+import { HttpLambdaIntegration } from "aws-cdk-lib/aws-apigatewayv2-integrations"
+import { Runtime } from "aws-cdk-lib/aws-lambda"
+import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs"
+import * as cdk from "aws-cdk-lib/core"
+import type { Construct } from "constructs"
 
 export class ContactlyStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
-    super(scope, id, props);
+    super(scope, id, props)
 
     // Health check lambda
     const healthFn = new NodejsFunction(this, "HealthFn", {
       runtime: Runtime.NODEJS_24_X,
       entry: path.join(__dirname, "../../packages/api/src/handlers/health.ts"),
-      handler: 'handler',
-      bundling: { externalModules: ["@aws-sdk/*"]}
+      handler: "handler",
+      bundling: { externalModules: ["@aws-sdk/*"] },
     })
 
     // HTTP API
@@ -25,12 +25,12 @@ export class ContactlyStack extends cdk.Stack {
     httpApi.addRoutes({
       path: "/health",
       methods: [HttpMethod.GET],
-      integration: new HttpLambdaIntegration("HealthIntegration", healthFn)
+      integration: new HttpLambdaIntegration("HealthIntegration", healthFn),
     })
 
     new cdk.CfnOutput(this, "ApiUrl", {
-      value: httpApi.url!,
-      description: "Base URL of the Contactly HTTP API"
+      value: httpApi.url ?? "URL not available",
+      description: "Base URL of the Contactly HTTP API",
     })
   }
-  }
+}
