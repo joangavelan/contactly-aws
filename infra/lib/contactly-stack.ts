@@ -1,14 +1,46 @@
 import * as path from "node:path"
 import { HttpApi, HttpMethod } from "aws-cdk-lib/aws-apigatewayv2"
 import { HttpLambdaIntegration } from "aws-cdk-lib/aws-apigatewayv2-integrations"
+import { AccountRecovery, UserPool, UserPoolClient } from "aws-cdk-lib/aws-cognito"
 import { Runtime } from "aws-cdk-lib/aws-lambda"
 import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs"
 import * as cdk from "aws-cdk-lib/core"
+import { RemovalPolicy } from "aws-cdk-lib/core"
 import type { Construct } from "constructs"
 
 export class ContactlyStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props)
+
+    // Cognito User Pool
+    const userPool = new UserPool(this, "UserPool", {
+      userPoolName: "contactly-users",
+      selfSignUpEnabled: true,
+      signInAliases: { email: true },
+      autoVerify: { email: true },
+      standardAttributes: {
+        email: { required: true, mutable: false },
+      },
+      passwordPolicy: {
+        minLength: 8,
+        requireLowercase: true,
+        requireUppercase: true,
+        requireDigits: true,
+        requireSymbols: false,
+      },
+      accountRecovery: AccountRecovery.EMAIL_ONLY,
+      removalPolicy: RemovalPolicy.DESTROY,
+    })
+
+    // User Pool Client (the "app" that authenticates against the pool)
+    const userPoolClient = new UserPoolClient(this, "UserPoolClient", {
+      userPool,
+      userPoolClientName: "contactly-cli",
+      generateSecret: false,
+      authFlows: {
+        userPassword: true,
+      },
+    })
 
     // Health check lambda
     const healthFn = new NodejsFunction(this, "HealthFn", {
@@ -31,6 +63,16 @@ export class ContactlyStack extends cdk.Stack {
     new cdk.CfnOutput(this, "ApiUrl", {
       value: httpApi.url ?? "URL not available",
       description: "Base URL of the Contactly HTTP API",
+    })
+
+    new cdk.CfnOutput(this, "UserPoolId", {
+      value: userPool.userPoolId,
+      description: "Cognito User Pool ID",
+    })
+
+    new cdk.CfnOutput(this, "UserPoolClientId", {
+      value: userPoolClient.userPoolClientId,
+      description: "Cognito User Pool Client ID",
     })
   }
 }
