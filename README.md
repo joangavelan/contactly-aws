@@ -4,8 +4,6 @@
 
 The goal is to internalize the "AWS way" of building things — infra-as-code, managed auth, serverless compute, cloud-native databases — before tackling more complex projects. Every decision in this project prioritizes learning the core AWS mental model over feature completeness: one resource at a time, deployed and understood before moving to the next.
 
-Contactly is the first of two learning vehicles. The second (**Noted**, a multi-tenant notes app) builds on top of what's learned here and introduces VPC networking, multi-tenancy patterns, and Google OAuth.
-
 ---
 
 ## The Stack
@@ -18,9 +16,7 @@ Contactly is the first of two learning vehicles. The second (**Noted**, a multi-
 | API | API Gateway (HTTP API) | HTTP routes, validates Cognito JWTs natively |
 | Auth | Cognito | Email sign-up/sign-in, issues JWTs |
 | Compute | Lambda (Node.js) | CRUD business logic, scoped per user |
-| DB access | RDS Data API | SQL over HTTPS, no VPC, no connection management |
-| Database | Aurora Serverless v2 (Postgres) | Stores contacts, scales to near-zero at idle |
-| Secrets | Secrets Manager | DB credentials, referenced by Data API calls |
+| Database | DynamoDB (on-demand) | Stores contacts, pay-per-request, scales to zero at idle, pure IAM access |
 
 ---
 
@@ -30,14 +26,14 @@ Contactly is the first of two learning vehicles. The second (**Noted**, a multi-
 
 ### Key architectural decisions
 
-**RDS Data API over VPC + direct connection**
-Lambda stays outside any VPC. Each query is a self-contained HTTPS call — AWS manages the actual Postgres connection pool behind the endpoint. No NAT Gateway (~$1/day saved), no connection exhaustion under concurrent Lambda invocations, no VPC complexity.
+**DynamoDB as the data store**
+Fully serverless and fully managed: access is a plain AWS SDK call authorized by IAM. The design discipline is access-pattern-first — list the queries the app makes, then shape the keys so each is answered by a single request. Contactly's patterns are simple (list a user's contacts, get/update/delete one), so a single table fits cleanly.
+
+**One Contacts table, Cognito `sub` as the partition key**
+Every contact lives under `PK = USER#<sub>`, so listing a user's contacts is one query against their partition and user isolation is structural — there's no `WHERE user_id =` to forget. No separate users table: Cognito is the user store (the JWT already carries `sub`, `email`). Full single-table design (multiple entity types sharing one table) would be overkill for a single relationship, so it's intentionally out of scope here.
 
 **HTTP API (API Gateway v2) over REST API (v1)**
 HTTP API has a native JWT authorizer — API Gateway validates Cognito tokens automatically with zero custom code. Cheaper and simpler than a Lambda authorizer.
-
-**Aurora Serverless v2 over RDS / DynamoDB**
-Relational domain (users, contacts, foreign keys) fits SQL naturally. Serverless v2 scales to near-zero at idle (no fixed hourly cost when not in use). No DynamoDB — access patterns are unknown and will evolve; DynamoDB requires designing those upfront.
 
 **CDK (TypeScript) over SAM / console**
 Infra as real code — loops, functions, shared types with Lambda handlers. One `cdk deploy` to create everything, one `cdk destroy` to tear it down cleanly. `RemovalPolicy.DESTROY` on all resources for clean teardown.
@@ -56,19 +52,18 @@ contactly/
     cdk.json
     tsconfig.json
 
-  backend/
-    src/
-      handlers/
-        contacts.ts        # CRUD Lambda handler
-      db/
-        client.ts          # Data API wrapper
-        migrations/
-          001_init.sql     # Schema
-      types/
-        index.ts           # Shared types
+  packages/
+    api/
+      src/
+        handlers/
+          contacts.ts      # CRUD Lambda handler
+        db/
+          client.ts        # DynamoDB DocumentClient helper
+        types/
+          index.ts         # Shared types
 
-  frontend/
-    src/                   # React + TanStack app
+    web/
+      src/                 # React + TanStack app
 
   package.json             # Monorepo root
   tsconfig.json
@@ -125,21 +120,19 @@ Each phase is independently deployable and testable before moving on.
 
 ---
 
-### Phase 3 — Aurora Serverless v2 + Secrets Manager + Data API
+### Phase 3 — DynamoDB table
 
-**Goal:** Query Postgres from a Lambda over the Data API.
+**Goal:** Create the data store and read/write it from a Lambda.
 
-- Add Aurora Serverless v2 cluster to the CDK stack with `enableHttpEndpoint: true`
-- Let CDK auto-generate the master credentials secret in Secrets Manager
-- Run the initial migration (`CREATE TABLE users`, `CREATE TABLE contacts`)
-- Write a test Lambda that queries the DB via the Data API SDK
-- Verify: `curl /db-test` returns rows
+- Define a single `Contacts` table in the CDK stack: partition key `PK` (string), sort key `SK` (string), `BillingMode.PAY_PER_REQUEST` (on-demand)
+- The table is schemaless and access is pure IAM — just define it and start writing
+- Decide the key encoding up front: `PK = USER#<sub>`, `SK = CONTACT#<id>`
+- Write a test Lambda that puts an item and queries it back via the DynamoDB DocumentClient
+- Verify: `curl /db-test` returns the item
 
-> **Note:** Verify RDS Data API is available in `us-east-2` when enabling it. If not, `us-east-1` is the guaranteed fallback — update `cdk.json` region accordingly.
+**CDK resources:** `aws_dynamodb.Table`, Lambda IAM policy for scoped `dynamodb:*` actions on the table ARN
 
-**CDK resources:** `aws_rds.DatabaseCluster`, `aws_secretsmanager.Secret`, Lambda IAM policy for `rds-data:ExecuteStatement` + `secretsmanager:GetSecretValue`
-
-**Concepts learned:** Aurora Serverless v2 scaling, Secrets Manager, Data API query format, least-privilege IAM, `RemovalPolicy.DESTROY`.
+**Concepts learned:** partition key vs sort key, single-table mindset (access-pattern-first), on-demand vs provisioned capacity, DocumentClient, least-privilege IAM, `RemovalPolicy.DESTROY`.
 
 ---
 
@@ -149,10 +142,11 @@ Each phase is independently deployable and testable before moving on.
 
 - Add JWT authorizer to API Gateway (points at Cognito user pool)
 - Implement Lambda handlers: `POST /contacts`, `GET /contacts`, `PUT /contacts/:id`, `DELETE /contacts/:id`
-- Scope all queries to the caller's `sub` claim (passed by API Gateway after JWT validation)
+- Use the caller's `sub` claim (passed by API Gateway after JWT validation) as `PK = USER#<sub>` — every read/write is confined to the caller's partition, so isolation is structural
+- `GET /contacts` → `Query` on the partition; single-item ops → `GetItem`/`PutItem`/`UpdateItem`/`DeleteItem` by `PK` + `SK`
 - Test with a real JWT: authenticated requests succeed, unauthenticated return 401
 
-**Concepts learned:** JWT authorizer config, how `sub` scopes data per user, parameterized queries via Data API.
+**Concepts learned:** JWT authorizer config, how `sub` as partition key scopes data per user, DynamoDB `Query` vs item operations.
 
 ---
 
@@ -172,58 +166,11 @@ Each phase is independently deployable and testable before moving on.
 
 ---
 
-## Cost Management
-
-| Resource | Cost | Action |
-|---|---|---|
-| Lambda | Free tier | No action needed |
-| API Gateway (HTTP API) | Free tier | No action needed |
-| Cognito | Free tier (≤50k MAU) | No action needed |
-| S3 + CloudFront | Free tier | No action needed |
-| Secrets Manager | ~$0.40/secret/mo | Acceptable |
-| Aurora Serverless v2 | ~$0.06/hr at idle | **`cdk destroy` when done for the day** |
-
-**Set a billing alarm before deploying anything:**
-AWS Console → Billing → Budgets → $20/month with email alert.
-
-**End of session workflow:**
-```bash
-cdk destroy   # tears down the entire stack cleanly
-```
-
----
-
-## AWS / CDK Setup Checklist
-
-- [x] AWS account created
-- [x] MFA enabled on root user
-- [x] IAM user `joan-dev` created with `AdministratorAccess`
-- [x] Access keys configured as `[default]` profile in `~/.aws/credentials`
-- [x] Region set to `us-east-2` (Ohio)
-- [x] `aws sts get-caller-identity` returns `joan-dev` ARN
-- [x] Node.js + AWS CDK CLI installed (`npm install -g aws-cdk`)
-- [x] `cdk --version` works
-
----
-
 ## Engineering Principles
 
 - **Infra-as-code only** — no resources created manually in the console
-- **Least-privilege IAM** — every Lambda gets only the permissions it needs, scoped to specific ARNs
-- **No secrets in plaintext** — always Secrets Manager, never environment variables for credentials
+- **Least-privilege IAM** — every Lambda gets only the permissions it needs, scoped to specific ARNs (here: `dynamodb:*` on the Contacts table ARN, nothing wider)
+- **No long-lived credentials** — services authenticate via IAM roles, never plaintext secrets or env-var credentials (DynamoDB needs none)
 - **`RemovalPolicy.DESTROY` on all resources** — `cdk destroy` must work cleanly every time
 - **One phase at a time** — deploy and validate before adding the next layer
 - **Read CloudWatch logs** — every time something breaks, logs first
-
----
-
-## What Comes Next (After Contactly)
-
-The second learning vehicle is **Noted** — a multi-tenant notes app that introduces:
-
-- Google OAuth via Cognito identity federation
-- Multi-tenant data isolation (tenant-scoped queries, RBAC)
-- Lambda-in-VPC + RDS Proxy (the alternative to Data API — real Postgres driver, proper networking)
-- VPC, subnets, security groups, NAT Gateway vs VPC endpoints
-
-By the end of both projects, the work streaming platform's AWS architecture will be readable and familiar.
