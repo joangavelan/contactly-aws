@@ -2,6 +2,7 @@ import * as path from "node:path"
 import { HttpApi, HttpMethod } from "aws-cdk-lib/aws-apigatewayv2"
 import { HttpLambdaIntegration } from "aws-cdk-lib/aws-apigatewayv2-integrations"
 import { AccountRecovery, UserPool, UserPoolClient } from "aws-cdk-lib/aws-cognito"
+import { AttributeType, BillingMode, Table } from "aws-cdk-lib/aws-dynamodb"
 import { Runtime } from "aws-cdk-lib/aws-lambda"
 import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs"
 import * as cdk from "aws-cdk-lib/core"
@@ -42,6 +43,13 @@ export class ContactlyStack extends cdk.Stack {
       },
     })
 
+    const contactlyTable = new Table(this, "ContactlyTable", {
+      partitionKey: { name: "PK", type: AttributeType.STRING },
+      sortKey: { name: "SK", type: AttributeType.STRING },
+      billingMode: BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.DESTROY,
+    })
+
     // Health check lambda
     const healthFn = new NodejsFunction(this, "HealthFn", {
       runtime: Runtime.NODEJS_24_X,
@@ -52,6 +60,26 @@ export class ContactlyStack extends cdk.Stack {
 
     // HTTP API
     const httpApi = new HttpApi(this, "ContactlyHttpApi")
+
+    // DB Test handler
+    const dbTestFn = new NodejsFunction(this, "DbTestFn", {
+      runtime: Runtime.NODEJS_24_X,
+      entry: path.join(__dirname, "../../packages/api/src/handlers/db-test.ts"),
+      bundling: { externalModules: ["@aws-sdk/*"] },
+      environment: {
+        TABLE_NAME: contactlyTable.tableName,
+      },
+    })
+
+    // Grant the Lambda scoped read/write on this table only
+    contactlyTable.grantReadWriteData(dbTestFn)
+
+    // Route: GET /db-test -> dbTestFn
+    httpApi.addRoutes({
+      path: "/db-test",
+      methods: [HttpMethod.GET],
+      integration: new HttpLambdaIntegration("DBTestIntegration", dbTestFn),
+    })
 
     // Route: GET /health -> healthFn
     httpApi.addRoutes({
