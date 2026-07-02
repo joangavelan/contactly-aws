@@ -1,5 +1,6 @@
 import * as path from "node:path"
 import { HttpApi, HttpMethod } from "aws-cdk-lib/aws-apigatewayv2"
+import { HttpUserPoolAuthorizer } from "aws-cdk-lib/aws-apigatewayv2-authorizers"
 import { HttpLambdaIntegration } from "aws-cdk-lib/aws-apigatewayv2-integrations"
 import { AccountRecovery, UserPool, UserPoolClient } from "aws-cdk-lib/aws-cognito"
 import { AttributeType, BillingMode, Table } from "aws-cdk-lib/aws-dynamodb"
@@ -61,26 +62,6 @@ export class ContactlyStack extends cdk.Stack {
     // HTTP API
     const httpApi = new HttpApi(this, "ContactlyHttpApi")
 
-    // DB Test handler
-    const dbTestFn = new NodejsFunction(this, "DbTestFn", {
-      runtime: Runtime.NODEJS_24_X,
-      entry: path.join(__dirname, "../../packages/api/src/handlers/db-test.ts"),
-      bundling: { externalModules: ["@aws-sdk/*"] },
-      environment: {
-        TABLE_NAME: contactlyTable.tableName,
-      },
-    })
-
-    // Grant the Lambda scoped read/write on this table only
-    contactlyTable.grantReadWriteData(dbTestFn)
-
-    // Route: GET /db-test -> dbTestFn
-    httpApi.addRoutes({
-      path: "/db-test",
-      methods: [HttpMethod.GET],
-      integration: new HttpLambdaIntegration("DBTestIntegration", dbTestFn),
-    })
-
     // Route: GET /health -> healthFn
     httpApi.addRoutes({
       path: "/health",
@@ -88,16 +69,68 @@ export class ContactlyStack extends cdk.Stack {
       integration: new HttpLambdaIntegration("HealthIntegration", healthFn),
     })
 
+    // Helper to define a contacts handler Lambda
+    const handlerFn = (name: string, file: string) => {
+      return new NodejsFunction(this, name, {
+        runtime: Runtime.NODEJS_24_X,
+        entry: path.join(__dirname, `../../packages/api/src/handlers/contacts/${file}`),
+        bundling: { externalModules: ["@aws-sdk/*"] },
+        environment: { TABLE_NAME: contactlyTable.tableName },
+      })
+    }
+
+    // Contacts handlers
+    const createFn = handlerFn("CreateContactFn", "create.ts")
+    const listFn = handlerFn("ListContactsFn", "list.ts")
+    const updateFn = handlerFn("UpdateContactFn", "update.ts")
+    const deleteFn = handlerFn("DeleteContactFn", "delete.ts")
+
+    // Least-privilege: each handler gets only the access it needs
+    contactlyTable.grantWriteData(createFn)
+    contactlyTable.grantReadData(listFn)
+    contactlyTable.grantWriteData(updateFn)
+    contactlyTable.grantWriteData(deleteFn)
+
+    // JWT authorizer — API Gateway validates Cognito tokens before invoking any Lambda
+    const authorizer = new HttpUserPoolAuthorizer("ContactsAuthorizer", userPool, {
+      userPoolClients: [userPoolClient],
+    })
+
+    // Contacts routes
+    httpApi.addRoutes({
+      path: "/contacts",
+      methods: [HttpMethod.POST],
+      integration: new HttpLambdaIntegration("CreateIntegration", createFn),
+      authorizer,
+    })
+    httpApi.addRoutes({
+      path: "/contacts",
+      methods: [HttpMethod.GET],
+      integration: new HttpLambdaIntegration("ListIntegration", listFn),
+      authorizer,
+    })
+    httpApi.addRoutes({
+      path: "/contacts/{id}",
+      methods: [HttpMethod.PUT],
+      integration: new HttpLambdaIntegration("UpdateIntegration", updateFn),
+      authorizer,
+    })
+    httpApi.addRoutes({
+      path: "/contacts/{id}",
+      methods: [HttpMethod.DELETE],
+      integration: new HttpLambdaIntegration("DeleteIntegration", deleteFn),
+      authorizer,
+    })
+
+    // Outputs
     new cdk.CfnOutput(this, "ApiUrl", {
       value: httpApi.url ?? "URL not available",
       description: "Base URL of the Contactly HTTP API",
     })
-
     new cdk.CfnOutput(this, "UserPoolId", {
       value: userPool.userPoolId,
       description: "Cognito User Pool ID",
     })
-
     new cdk.CfnOutput(this, "UserPoolClientId", {
       value: userPoolClient.userPoolClientId,
       description: "Cognito User Pool Client ID",

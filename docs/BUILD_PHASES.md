@@ -69,11 +69,11 @@ Check tasks off as you go — this file is the tracking layer.
 
 **Goal:** A fully working, secured, user-scoped API.
 
-- [ ] Add JWT authorizer to API Gateway (points at Cognito user pool)
-- [ ] Implement Lambda handlers: `POST /contacts`, `GET /contacts`, `PUT /contacts/:id`, `DELETE /contacts/:id`
-- [ ] Use the caller's `sub` claim (passed by API Gateway after JWT validation) as `PK = USER#<sub>` — every read/write is confined to the caller's partition, so isolation is structural
-- [ ] `GET /contacts` → `Query` on the partition; single-item ops → `GetItem`/`PutItem`/`UpdateItem`/`DeleteItem` by `PK` + `SK`
-- [ ] Test with a real JWT: authenticated requests succeed, unauthenticated return 401
+- [x] Add JWT authorizer to API Gateway (points at Cognito user pool)
+- [x] Implement Lambda handlers: `POST /contacts`, `GET /contacts`, `PUT /contacts/:id`, `DELETE /contacts/:id`
+- [x] Use the caller's `sub` claim (passed by API Gateway after JWT validation) as `PK = USER#<sub>` — every read/write is confined to the caller's partition, so isolation is structural
+- [x] `GET /contacts` → `Query` on the partition; single-item ops → `GetItem`/`PutItem`/`UpdateItem`/`DeleteItem` by `PK` + `SK`
+- [x] Test with a real JWT: authenticated requests succeed, unauthenticated return 401
 
 **Concepts learned:** JWT authorizer config, how `sub` as partition key scopes data per user, DynamoDB `Query` vs item operations.
 
